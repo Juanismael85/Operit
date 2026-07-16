@@ -345,64 +345,82 @@ fun MCPConfigScreen(
             return@LaunchedEffect
         }
 
-        AppLogger.d("MCPConfigScreen", "Fetching tools for configured runtime-ready services...")
+        // Retry up to 3 times with 2s delay if no tools found (bridge may not be ready yet)
+        val maxRetries = 3
+        var attempt = 0
+        var toolsMap = mutableMapOf<String, List<String>>()
 
-        val toolsMap = mutableMapOf<String, List<String>>()
+        while (attempt < maxRetries) {
+            attempt++
+            AppLogger.d("MCPConfigScreen", "Fetching tools (attempt $attempt/$maxRetries)...")
 
-        try {
-            val bridgeServiceTools = parseMCPServiceToolNames(
-                MCPBridge.getInstance(context).listMcpServices()
-            )
+            toolsMap = mutableMapOf<String, List<String>>()
 
-            for (pluginId in visiblePluginIds) {
-                try {
-                    val metadata = mcpConfigSnapshot.pluginMetadata[pluginId]
-                    val isRemote = metadata?.type == "remote"
-                    val isDeployed = if (isRemote) true else mcpLocalServer.isPluginRuntimeReady(pluginId)
-                    if (!isDeployed) {
-                        AppLogger.d("MCPConfigScreen", "Plugin $pluginId runtime directory is not ready, skip tool fetch.")
-                        continue
+            try {
+                val bridgeServiceTools = parseMCPServiceToolNames(
+                    MCPBridge.getInstance(context).listMcpServices()
+                )
+
+                for (pluginId in visiblePluginIds) {
+                    try {
+                        val metadata = mcpConfigSnapshot.pluginMetadata[pluginId]
+                        val isRemote = metadata?.type == "remote"
+                        val isDeployed = if (isRemote) true else mcpLocalServer.isPluginRuntimeReady(pluginId)
+                        if (!isDeployed) {
+                            AppLogger.d("MCPConfigScreen", "Plugin $pluginId runtime directory is not ready, skip tool fetch.")
+                            continue
+                        }
+
+                        // Try multiple key variations to find tools in the bridge response.
+                        // The bridge registers services using the server name from the plugin's
+                        // mcpServers config (e.g. "sequential-thinking"), but pluginId may differ
+                        // (e.g. "official_sequential-thinking"). Try all reasonable lookups.
+                        val toolNames = bridgeServiceTools[pluginId]
+                            ?: bridgeServiceTools[pluginId.split("/").last()]
+                            ?: bridgeServiceTools[pluginId.removePrefix("official_")]
+                            ?: bridgeServiceTools[pluginId.removePrefix("official_").replace("-", "_")]
+                            ?: bridgeServiceTools.entries.firstOrNull { (key, _) ->
+                                pluginId.contains(key) || key.contains(pluginId.split("/").last())
+                            }?.value
+                            ?: emptyList()
+
+                        if (toolNames.isNotEmpty()) {
+                            toolsMap[pluginId] = toolNames
+                            AppLogger.d("MCPConfigScreen", "Plugin $pluginId has ${toolNames.size} tools: ${toolNames.joinToString(", ")}")
+                        } else {
+                            AppLogger.d("MCPConfigScreen", "Plugin $pluginId: no tools found. Available bridge services: ${bridgeServiceTools.keys.joinToString(", ")}")
+                        }
+                    } catch (e: Exception) {
+                        AppLogger.e("MCPConfigScreen", "Error getting tools for plugin $pluginId: ${e.message}")
                     }
+                }
 
-                    // Try multiple key variations to find tools in the bridge response.
-                    // The bridge registers services using the server name from the plugin's
-                    // mcpServers config (e.g. "sequential-thinking"), but pluginId may differ
-                    // (e.g. "official_sequential-thinking"). Try all reasonable lookups.
-                    val toolNames = bridgeServiceTools[pluginId]
-                        ?: bridgeServiceTools[pluginId.split("/").last()]
-                        ?: bridgeServiceTools[pluginId.removePrefix("official_")]
-                        ?: bridgeServiceTools[pluginId.removePrefix("official_").replace("-", "_")]
-                        ?: bridgeServiceTools.entries.firstOrNull { (key, _) ->
-                            pluginId.contains(key) || key.contains(pluginId.split("/").last())
-                        }?.value
-                        ?: emptyList()
+                if (toolsMap.isNotEmpty()) {
+                    break // Success — stop retrying
+                }
 
-                    if (toolNames.isNotEmpty()) {
-                        toolsMap[pluginId] = toolNames
-                        AppLogger.d("MCPConfigScreen", "Plugin $pluginId has ${toolNames.size} tools: ${toolNames.joinToString(", ")}")
-                    } else {
-                        AppLogger.d("MCPConfigScreen", "Plugin $pluginId: no tools found. Available bridge services: ${bridgeServiceTools.keys.joinToString(", ")}")
-                    }
-                } catch (e: Exception) {
-                    AppLogger.e("MCPConfigScreen", "Error getting tools for plugin $pluginId: ${e.message}")
+                if (attempt < maxRetries) {
+                    AppLogger.d("MCPConfigScreen", "No tools found on attempt $attempt, retrying in 2s...")
+                    kotlinx.coroutines.delay(2000)
+                }
+            } catch (e: Exception) {
+                AppLogger.e("MCPConfigScreen", "Error fetching tools on attempt $attempt", e)
+                if (attempt < maxRetries) {
+                    kotlinx.coroutines.delay(2000)
                 }
             }
-
-            // 更新工具映射
-            pluginToolsMap = toolsMap
-
-            if (toolsMap.isNotEmpty()) {
-                val totalTools = toolsMap.values.sumOf { it.size }
-                AppLogger.i("MCPConfigScreen", "Loaded $totalTools tools from ${toolsMap.size} plugins")
-            } else {
-                AppLogger.i("MCPConfigScreen", "No tools found for any installed plugins.")
-            }
-        } catch (e: Exception) {
-            AppLogger.e("MCPConfigScreen", "Error fetching tools", e)
-            Toast.makeText(context, context.getString(R.string.tools_load_error, e.message), Toast.LENGTH_SHORT).show()
-        } finally {
-            isToolsLoading = false
         }
+
+        pluginToolsMap = toolsMap
+
+        if (toolsMap.isNotEmpty()) {
+            val totalTools = toolsMap.values.sumOf { it.size }
+            AppLogger.i("MCPConfigScreen", "Loaded $totalTools tools from ${toolsMap.size} plugins")
+        } else {
+            AppLogger.i("MCPConfigScreen", "No tools found for any installed plugins after $maxRetries attempts.")
+        }
+
+        isToolsLoading = false
     }
 
 
