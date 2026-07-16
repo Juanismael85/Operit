@@ -994,9 +994,20 @@ class MCPRepository(private val context: Context) {
                         }
                     }
                     
-                    // 对于已安装但不在活跃列表中的插件，更新停止时间
+                    // For installed plugins not in the active list, update stop time.
+                    // The bridge registers services using the server name from the plugin's
+                    // mcpServers config (e.g. "sequential-thinking"), but pluginId may differ
+                    // (e.g. "official_sequential-thinking"). Check multiple key variations.
                     _installedPluginIds.value.forEach { pluginId ->
-                        if (!activeServices.contains(pluginId) && mcpLocalServer.isServerLikelyRunning(pluginId)) {
+                        val isActive = activeServices.any { svcName ->
+                            svcName == pluginId ||
+                            svcName == pluginId.split("/").last() ||
+                            svcName == pluginId.removePrefix("official_") ||
+                            svcName == pluginId.removePrefix("official_").replace("-", "_") ||
+                            pluginId.contains(svcName) ||
+                            svcName.contains(pluginId.split("/").last())
+                        }
+                        if (!isActive && mcpLocalServer.isServerLikelyRunning(pluginId)) {
                             mcpLocalServer.updateServerStatus(
                                 serverId = pluginId,
                                 lastStopTime = System.currentTimeMillis()

@@ -364,13 +364,24 @@ fun MCPConfigScreen(
                         continue
                     }
 
-                    val toolNames = bridgeServiceTools[pluginId].orEmpty()
+                    // Try multiple key variations to find tools in the bridge response.
+                    // The bridge registers services using the server name from the plugin's
+                    // mcpServers config (e.g. "sequential-thinking"), but pluginId may differ
+                    // (e.g. "official_sequential-thinking"). Try all reasonable lookups.
+                    val toolNames = bridgeServiceTools[pluginId]
+                        ?: bridgeServiceTools[pluginId.split("/").last()]
+                        ?: bridgeServiceTools[pluginId.removePrefix("official_")]
+                        ?: bridgeServiceTools[pluginId.removePrefix("official_").replace("-", "_")]
+                        ?: bridgeServiceTools.entries.firstOrNull { (key, _) ->
+                            pluginId.contains(key) || key.contains(pluginId.split("/").last())
+                        }?.value
+                        ?: emptyList()
 
                     if (toolNames.isNotEmpty()) {
                         toolsMap[pluginId] = toolNames
                         AppLogger.d("MCPConfigScreen", "Plugin $pluginId has ${toolNames.size} tools: ${toolNames.joinToString(", ")}")
                     } else {
-                        AppLogger.d("MCPConfigScreen", "Plugin $pluginId: no tools found.")
+                        AppLogger.d("MCPConfigScreen", "Plugin $pluginId: no tools found. Available bridge services: ${bridgeServiceTools.keys.joinToString(", ")}")
                     }
                 } catch (e: Exception) {
                     AppLogger.e("MCPConfigScreen", "Error getting tools for plugin $pluginId: ${e.message}")
